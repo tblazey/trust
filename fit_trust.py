@@ -81,7 +81,7 @@ class ExpModel:
         return np.vstack((d_1, d_2))
 
     def cost(self, x):
-        """
+        r"""
         Sum of squares error for model
 
         .. math \sum ((y - x[0] * exp(-t / x[1])) ** 2)
@@ -241,8 +241,8 @@ def create_parser():
     """
 
     parser = argparse.ArgumentParser(
-        description="Computes blood oxygenation (Y) from TRUST data",
-        epilog="By default tempporal dimension of TRUST image should be as follows: "
+        description="Computes venous blood oxygenation (Y) from TRUST data",
+        epilog="By default temporal dimension of TRUST image should be as follows: "
         "([label, control].1 ... [label, control].N_eff_te) * eff_rep",
     )
     parser.add_argument("trust", type=str, help="Nifti image containing TRUST")
@@ -293,7 +293,13 @@ def create_parser():
         type=int,
         default=10000,
         help="Number of simulations for computing standard errror of blood "
-        "oxygenation (Y). Default is 10,000",
+        "oxygenation (Y) and OEF. Default is 10,000",
+    )
+    parser.add_argument(
+        "-art_oxy",
+        type=float,
+        default=100,
+        help="Arterial oxygen content (%%) for OEF. Default is 100",
     )
 
     return parser
@@ -342,14 +348,18 @@ def main(argv=None):
 
     # Convert T2/R2 to blood oxygenation
     oxy = r2_to_oxy(1 / hat[1], args.hct, tau=args.tau)
+    oef = (args.art_oxy - oxy) / args.art_oxy
 
-    # Run simulation to get standard error
+    # Run simulation to get standard errors
     r2 = 1e3 / hat[1]
     r2_sim = np.random.normal(loc=r2, scale=r2_se, size=args.n_sim) * 1e-3
     oxy_sim = np.zeros_like(r2_sim)
+    oef_sim = np.zeros_like(r2_sim)
     for idx, r2_s in enumerate(r2_sim):
         oxy_sim[idx] = r2_to_oxy(r2_s, args.hct, tau=args.tau)
-        oxy_se = np.std(oxy_sim)
+        oef_sim[idx] = (args.art_oxy - oxy_sim[idx]) / args.art_oxy
+    oxy_se = np.std(oxy_sim)
+    oef_se = np.std(oef_sim)
 
     # Make dictionaries with fitted and input parameters
     fit_dic = {
@@ -357,6 +367,7 @@ def main(argv=None):
         "S0": {"value": np.round(hat[0], 5), "se": np.round(se[0], 5), "unit": "A.U."},
         "R2": {"value": np.round(r2, 5), "se": np.round(r2_se, 5), "unit": "1/s"},
         "Y": {"value": np.round(oxy, 5), "se": np.round(oxy_se, 5), "unit": "%"},
+        "OEF": {"value": np.round(oef, 5), "se": np.round(oef_se, 5), "unit": "frac."},
     }
     in_dic = vars(args)
     par_dic = {"input": in_dic, "fitted": fit_dic}
