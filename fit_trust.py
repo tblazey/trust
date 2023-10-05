@@ -6,8 +6,10 @@ Script to compute venous oxygenation using TRUST using method from Lu et al., 20
 import argparse
 import json
 import matplotlib.pyplot as plt
+from matplotlib.widgets import RectangleSelector, Button
 import nibabel as nib
 import numpy as np
+from scipy import ndimage
 from scipy.optimize import minimize
 from numpy.polynomial.polynomial import Polynomial
 
@@ -235,38 +237,135 @@ def r2_to_oxy(r2, hct, tau=10):
     return oxy
 
 
+def make_roi(method, diff_img, n_vox=4, under_img=None):
+    """
+    Constructs an ROI for TRUST processsing
+
+    Parameters
+    ----------
+    method : str
+        Method for ROI creation. Either auto or manual.
+        If manual, users selects via a plot.
+    diff_img : ndarray
+        Difference between labels and controls
+    n_vox : int
+        Number of peak voxels to use within ROI
+    under_img: ndarray
+        Image to show underneath difference
+
+    Returns
+    -------
+    roi_dat : ndarray
+        Array containing 1s within ROI
+    """
+
+    if method == "manual":
+
+        def rect_callback(e_click, e_release):
+            """
+            Callback for rectangular selector
+            """
+
+        def button_callback(event):
+            """
+            Callback for button
+            """
+
+            if np.allclose(rect.corners[0], np.zeros(4)):
+                print("Please click and drag to select an roi")
+            else:
+                plt.close("all")
+
+        # Define colormap for difference image
+        diff_map = plt.get_cmap("plasma")
+        diff_map.set_under(alpha=0)
+        diff_max = np.max(diff_img)
+        diff_min = diff_max * 0.05
+
+        # Create figure showing difference and underlying anatomy
+        fig, ax = plt.subplots()
+        if under_img is not None:
+            ax.matshow(under_img.T, cmap="gray", origin="lower")
+        ax.matshow(
+            diff_img.T, cmap=diff_map, vmin=diff_min, vmax=diff_max, origin="lower"
+        )
+
+        # Create widgets
+        rect = RectangleSelector(
+            ax, rect_callback, interactive=True, props={"alpha": 0.5}
+        )
+        b_ax = fig.add_axes([0.7, 0.01, 0.1, 0.075])
+        b_sub = Button(b_ax, "Submit")
+        b_sub.on_clicked(button_callback)
+
+        # Run plot and get indicies for ROI region
+        plt.show()
+        corners = np.array(rect.corners)
+        c_min = np.floor(np.min(corners, axis=1)).astype(int)
+        c_max = np.ceil(np.max(corners, axis=1)).astype(int) + 1
+
+    else:
+        # Smooth with a square kernel
+        kernel = np.ones((3, 3))
+        diff_conv = ndimage.convolve(diff_img, kernel)
+
+        # Find voxel with largest signal within kernel
+        idx = np.unravel_index(np.argmax(diff_conv), diff_img.shape)
+
+        # Get indicies for ROI region
+        c_min = np.maximum(np.array(idx) - 4, 0)
+        c_max = np.minimum(np.array(idx) + 4, np.array(diff_img.shape) + 1)
+
+    # Find voxels within ROI region with largest signal
+    diff_sub = diff_img[c_min[0] : c_max[0], c_min[1] : c_max[1]]
+    diff_sort = np.argpartition(diff_sub.flatten(), -n_vox)[-n_vox:]
+    diff_idx = np.array(np.unravel_index(diff_sort, diff_sub.shape))
+    diff_idx += c_min[:, np.newaxis]
+
+    # Make roi mask
+    roi_dat = np.zeros(diff_img.shape)
+    roi_dat[diff_idx[0, :], diff_idx[1, :]] = 1
+
+    return roi_dat[..., None]
+
+
 def create_parser():
     """
     Creates argparse argument parser for TRUST processing script
     """
 
     parser = argparse.ArgumentParser(
-        description="Computes venous blood oxygenation (Y) from TRUST data",
+        description="Computes venous blood oxygenation (Y) from TRUST data.",
         epilog="By default temporal dimension of TRUST image should be as follows: "
         "([label, control].1 ... [label, control].N_eff_te) * eff_rep",
     )
-    parser.add_argument("trust", type=str, help="Nifti image containing TRUST")
-    parser.add_argument("mask", type=str, help="Nifti image with roi mask")
-    parser.add_argument("out", type=str, help="Root for file outputs")
+    parser.add_argument("trust", type=str, help="Nifti image containing TRUST.")
+    parser.add_argument("out", type=str, help="Root for file outputs.")
+    parser.add_argument(
+        "-mask",
+        type=str,
+        help="Nifti image with roi mask. If not specified will find region with "
+        "highest signal (see -roi_method).",
+    )
     parser.add_argument(
         "-eff_te",
         type=float,
         default=[0.44, 40, 80, 160],
         nargs="+",
-        help="Effective echo times (ms). Default is 0.44, 40, 80, 160",
+        help="Effective echo times (ms). Defaults are 0.44, 40, 80, 160.",
     )
     parser.add_argument(
         "-eff_rep",
         type=int,
         default=3,
-        help="Number of repetions of effective echo times in -eff_te",
+        help="Number of repetions of effective echo times in -eff_te.",
     )
     parser.add_argument(
         "-tau",
         choices=[5, 10, 15, 20],
         default=10,
         type=int,
-        help="Inter-echo spacing of TRUST CPMG sequence. Default is 10.",
+        help="Inter-echo spacing of TRUST CPMG sequence (ms). Default is 10.",
     )
     parser.add_argument(
         "-inv_time",
@@ -278,12 +377,12 @@ def create_parser():
         "-t1_blood",
         type=float,
         default=1624,
-        help="T1 relaxation time for blood (ms). Default is 1624",
+        help="T1 relaxation time for blood (ms). Default is 1624.",
     )
     parser.add_argument(
         "-flip_label",
         action="store_true",
-        help="Changes expected image order from Label, Control to Control, Label",
+        help="Changes expected image order from Label, Control to Control, Label.",
     )
     parser.add_argument(
         "-hct", type=float, default=0.4, help="Hematocrit fraction. Default is 0.4"
@@ -292,15 +391,34 @@ def create_parser():
         "-n_sim",
         type=int,
         default=10000,
-        help="Number of simulations for computing standard errror of blood "
-        "oxygenation (Y) and OEF. Default is 10,000",
+        help="Number of simulations for computing standard error of blood "
+        "oxygenation (Y) and OEF. Default is 10,000.",
     )
     parser.add_argument(
         "-art_oxy",
         type=float,
         default=100,
-        help="Arterial oxygen content (%%) for OEF. Default is 100",
+        help="Arterial oxygen content (%%) for OEF. Default is 100.",
     )
+    parser.add_argument(
+        "-roi_method",
+        type=str,
+        default="auto",
+        choices=["manual", "auto"],
+        help="Method for ROI generation if -mask is not specified. Takes manual or auto. "
+        "If manual users selects a square region from a plot. If auto than program "
+        "finds region whose 9 nearest neighbors have the greatest average signal. "
+        "In either case, the -n_vox largest voxels within the ROI are used. "
+        "Default is auto.",
+    )
+    parser.add_argument(
+        "-n_vox",
+        type=int,
+        default=4,
+        help="Number of voxels to select within region when using -roi-method. "
+        "Default is 4.",
+    )
+    parser.add_argument("-seed", type=int, help="Seed for standard error simulations.")
 
     return parser
 
@@ -316,23 +434,35 @@ def main(argv=None):
 
     # Get array of effective echo timse
     eff_te = np.tile(args.eff_te, args.eff_rep)
+    min_eff_idx = np.argwhere(eff_te == np.min(eff_te)).flatten()
 
     # Load in image data
     trust_hdr = nib.load(args.trust)
     trust_dat = trust_hdr.get_fdata()
 
-    # Load in roi mask
-    roi_hdr = nib.load(args.mask)
-    roi_dat = roi_hdr.get_fdata()
-
-    # Get average time series within roi
-    roi_msk = np.broadcast_to(roi_dat[..., None] == 0, trust_dat.shape)
-    roi_avg = np.ma.mean(np.ma.array(trust_dat, mask=roi_msk), axis=(0, 1, 2)).data
-
-    # Compute control label difference
-    roi_diff = roi_avg[1::2] - roi_avg[0::2]
+    # Compute label control difference
+    trust_diff = trust_dat[..., 1::2] - trust_dat[..., 0::2]
     if args.flip_label is True:
-        roi_diff *= -1
+        trust_diff *= -1
+
+    # Either load in a mask or create one
+    if args.mask is not None:
+        roi_hdr = nib.load(args.mask)
+        roi_dat = roi_hdr.get_fdata()
+
+    else:
+        # Make average of minimum echo time images
+        min_eff_diff = np.mean(trust_diff[..., min_eff_idx], axis=-1).squeeze()
+        min_eff_img = np.mean(trust_dat[..., min_eff_idx], axis=-1).squeeze()
+
+        # Make image for mask
+        roi_dat = make_roi(
+            args.roi_method, min_eff_diff, n_vox=args.n_vox, under_img=min_eff_img
+        )
+
+    # Apply mask to trust data
+    roi_msk = np.broadcast_to(roi_dat[..., None] == 0, trust_diff.shape)
+    roi_diff = np.ma.mean(np.ma.array(trust_diff, mask=roi_msk), axis=(0, 1, 2)).data
 
     # Adjust for influence of t1 of blood. In Lu et al., 2018 this is done after fitting
     # (equation 5). Here we remove those components for the data (equation 4)
@@ -352,6 +482,8 @@ def main(argv=None):
 
     # Run simulation to get standard errors
     r2 = 1e3 / hat[1]
+    if args.seed is not None:
+        np.random.seed(args.seed)
     r2_sim = np.random.normal(loc=r2, scale=r2_se, size=args.n_sim) * 1e-3
     oxy_sim = np.zeros_like(r2_sim)
     oef_sim = np.zeros_like(r2_sim)
@@ -393,7 +525,19 @@ def main(argv=None):
     plt.ylabel(r"$\Delta$ Signal", fontweight="bold")
     plt.fill_between(te_hat, y1=diff_dn, y2=diff_up, alpha=0.6, color="#999999")
     plt.title("Model Fit", fontweight="bold")
-    plt.savefig(f"{args.out}_fig.jpeg", dpi=200, bbox_inches="tight")
+    plt.savefig(f"{args.out}_fit.jpeg", dpi=200, bbox_inches="tight")
+    plt.close("all")
+
+    # Make roi plot
+    min_eff_mean = np.mean(trust_dat[..., 0::2][..., min_eff_idx], axis=-1).squeeze()
+    fig, ax = plt.subplots()
+    ax.matshow(min_eff_mean.T, cmap="gray", origin="lower")
+    roi_map = plt.get_cmap("Reds")
+    roi_map.set_under(alpha=0)
+    ax.matshow(roi_dat.squeeze().T, cmap=roi_map, vmin=0.5, vmax=1, origin="lower")
+    ax.set_title("TRUST ROI", fontweight="bold")
+    ax.axis("off")
+    fig.savefig(f"{args.out}_roi.jpeg", dpi=200, bbox_inches="tight")
     plt.close("all")
 
 
