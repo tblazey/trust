@@ -158,14 +158,16 @@ class ExpModel:
         )
         return np.array([[d_11, d_12], [d_21, d_22]])
 
-    def fit(self, return_cov=False):
+    def fit(self, init=None, return_cov=False):
         """
-        Fits single exponential model to fit
+        Fits single exponential model to data
 
         Parameters
         ----------
         return_cov : bool
             Returns covariance matrix if true
+        init : ndarray
+            Initial values fo fitting. If not specified it is data max and 60.
 
         Returns
         -------
@@ -177,10 +179,13 @@ class ExpModel:
             Covariance matrix of model parameters
         """
 
+        if init is None:
+            init = [self.y.max(), 60]
+
         # Run model fitting
         fit = minimize(
             self.cost,
-            [self.y.max(), 60],
+            init,
             jac=self.cost_jac,
             hess=self.cost_hess,
             method="Newton-CG",
@@ -220,7 +225,7 @@ def r2_to_oxy(r2, hct, tau=10):
     # Parameters from Table 1  of Lu et al.
     model_coefs = {
         5: [-4.4, 39.1, -33.5, 1.5, 4.7, 167.8],
-        10: [-13.5, 80.2, -75.9, -0.5, 3.4, 247.4],
+        10: [-13.5, 80.2, -75.9, 0.5, 3.4, 247.4],
         15: [-12.0, 77.7, -75.5, -6.6, 31.4, 249.4],
         20: [7.0, -9.2, 23.2, -4.5, 5.3, 310.8],
     }
@@ -468,9 +473,17 @@ def main(argv=None):
     # (equation 5). Here we remove those components for the data (equation 4)
     roi_diff *= np.exp((args.inv_time - eff_te) / args.t1_blood)
 
+    # Use linear regression to get initial estimate
+    if np.min(roi_diff) > 0:
+        A = np.stack((np.ones_like(eff_te), -eff_te), axis=1)
+        coef, _, _, _ = np.linalg.lstsq(A, np.log(roi_diff), rcond=None)
+        init = np.array([np.exp(coef[0]), 1 / coef[1]])
+    else:
+        init = np.array([np.max(roi_diff), 60])
+
     # Fit exponential model to data to get T2
     model = ExpModel(eff_te, roi_diff)
-    hat, se, cov = model.fit(return_cov=True)
+    hat, se, cov = model.fit(return_cov=True, init=init)
 
     # Get standard error for R2
     r2_diff = -1e3 / hat[1] ** 2
@@ -495,8 +508,18 @@ def main(argv=None):
 
     # Make dictionaries with fitted and input parameters
     fit_dic = {
-        "T2": {"value": np.round(hat[1], 5), "se": np.round(se[1], 5), "unit": "ms"},
-        "S0": {"value": np.round(hat[0], 5), "se": np.round(se[0], 5), "unit": "A.U."},
+        "T2": {
+            "init": np.round(init[1], 5),
+            "value": np.round(hat[1], 5),
+            "se": np.round(se[1], 5),
+            "unit": "ms",
+        },
+        "S0": {
+            "init": np.round(init[0], 5),
+            "value": np.round(hat[0], 5),
+            "se": np.round(se[0], 5),
+            "unit": "A.U.",
+        },
         "R2": {"value": np.round(r2, 5), "se": np.round(r2_se, 5), "unit": "1/s"},
         "Y": {"value": np.round(oxy, 5), "se": np.round(oxy_se, 5), "unit": "%"},
         "OEF": {"value": np.round(oef, 5), "se": np.round(oef_se, 5), "unit": "frac."},
