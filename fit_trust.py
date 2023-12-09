@@ -363,7 +363,7 @@ def create_parser():
         "-eff_rep",
         type=int,
         default=3,
-        help="Number of repetions of effective echo times in -eff_te.",
+        help="Number of repetions of effective echo times in -eff_te. Default is 3.",
     )
     parser.add_argument(
         "-tau",
