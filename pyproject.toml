@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trust"
+version = "0.1.0"
+description = "Computes venous blood oxygenation from TRUST MR data"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "scipy",
+    "nibabel",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+fit_trust = "trust.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["trust*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
